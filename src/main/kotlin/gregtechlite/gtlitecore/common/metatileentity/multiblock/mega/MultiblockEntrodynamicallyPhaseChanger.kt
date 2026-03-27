@@ -8,9 +8,7 @@ import gregtech.api.capability.impl.HeatingCoilRecipeLogic
 import gregtech.api.metatileentity.interfaces.IGregTechTileEntity
 import gregtech.api.metatileentity.multiblock.IMultiblockPart
 import gregtech.api.metatileentity.multiblock.MultiMapMultiblockController
-import gregtech.api.metatileentity.multiblock.MultiblockAbility.INPUT_ENERGY
-import gregtech.api.metatileentity.multiblock.MultiblockAbility.INPUT_LASER
-import gregtech.api.metatileentity.multiblock.MultiblockAbility.SUBSTATION_INPUT_ENERGY
+import gregtech.api.metatileentity.multiblock.MultiblockAbility.*
 import gregtech.api.metatileentity.multiblock.RecipeMapMultiblockController
 import gregtech.api.metatileentity.multiblock.ui.KeyManager
 import gregtech.api.metatileentity.multiblock.ui.MultiblockUIBuilder
@@ -44,6 +42,7 @@ import gregtechlite.gtlitecore.common.block.variant.MetalCasing
 import gregtechlite.gtlitecore.common.block.variant.MultiblockCasing
 import gregtechlite.gtlitecore.common.block.variant.science.ScienceCasing
 import net.minecraft.item.ItemStack
+import net.minecraft.nbt.NBTTagCompound
 import net.minecraft.util.ResourceLocation
 import net.minecraft.util.text.ITextComponent
 import net.minecraft.util.text.Style
@@ -78,7 +77,8 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
         private val glassState = GlassCasing.NANO_SHIELDING_FRAME.state
     }
 
-    override fun createMetaTileEntity(tileEntity: IGregTechTileEntity?) = MultiblockEntrodynamicallyPhaseChanger(metaTileEntityId)
+    override fun createMetaTileEntity(tileEntity: IGregTechTileEntity?) =
+        MultiblockEntrodynamicallyPhaseChanger(metaTileEntityId)
 
     override fun formStructure(context: PatternMatchContext)
     {
@@ -87,8 +87,12 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
         tier = context.getAttributeOrDefault(COIL_TIER, BlockWireCoil.CoilType.CUPRONICKEL).tier
         level = context.getAttributeOrDefault(COIL_TIER, BlockWireCoil.CoilType.CUPRONICKEL).level
 
-        temperature = context.getAttributeOrDefault(COIL_TIER, BlockWireCoil.CoilType.CUPRONICKEL).coilTemperature
-        temperature += 1000 * max(0, getTierByVoltage(energyContainer.inputVoltage) - LV)
+        val baseTemperature =
+            context.getAttributeOrDefault(COIL_TIER, BlockWireCoil.CoilType.CUPRONICKEL).coilTemperature +
+                    1000 * max(0, getTierByVoltage(energyContainer.inputVoltage) - LV)
+
+        // max for temperature from nbt and coil
+        temperature = max(temperature, baseTemperature)
     }
 
     override fun invalidateStructure()
@@ -152,7 +156,8 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
     // @formatter:on
 
     @SideOnly(Side.CLIENT)
-    override fun getBaseTexture(sourcePart: IMultiblockPart?): ICubeRenderer = GTLiteOverlays.LATTICE_QCD_THERMAL_SHIELDING_CASING
+    override fun getBaseTexture(sourcePart: IMultiblockPart?): ICubeRenderer =
+        GTLiteOverlays.LATTICE_QCD_THERMAL_SHIELDING_CASING
 
     @SideOnly(Side.CLIENT)
     override fun getFrontOverlay(): ICubeRenderer = GTLiteOverlays.ENTRODYNAMICALLY_PHASE_CHANGER_OVERLAY
@@ -190,7 +195,9 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
         if (isStructureFormed)
         {
             val heatKey = KeyUtil.number(TextFormatting.RED, syncer.syncInt(currentTemperature).toLong(), "K")
-            keyManager.add(KeyUtil.lang(TextFormatting.GRAY, "gregtech.multiblock.blast_furnace.max_temperature", heatKey))
+            keyManager.add(KeyUtil.lang(TextFormatting.GRAY,
+                                        "gregtech.multiblock.blast_furnace.max_temperature",
+                                        heatKey))
         }
     }
 
@@ -209,12 +216,29 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
     {
         val components = super.getDataInfo()
         components.add(TextComponentTranslation("gregtech.multiblock.blast_furnace.max_temperature",
-            TextComponentTranslation(formatNumbers(this.temperature) + "K")
-                .setStyle(Style().setColor(TextFormatting.RED))))
+                                                TextComponentTranslation(formatNumbers(this.temperature) + "K")
+                                                    .setStyle(Style().setColor(TextFormatting.RED))))
         return components
     }
 
-    private inner class EntrodynamicallyPhaseChangerRecipeLogic(mte: RecipeMapMultiblockController) : ExtendedPowerHeatingCoilRecipeLogic(mte)
+    override fun writeToNBT(data: NBTTagCompound): NBTTagCompound
+    {
+        super.writeToNBT(data)
+        val temperatureNBT = NBTTagCompound()
+        temperatureNBT.setInteger("temperature", temperature)
+        data.setTag("heatData", temperatureNBT)
+        return data
+    }
+
+    override fun readFromNBT(data: NBTTagCompound)
+    {
+        super.readFromNBT(data)
+        val temperatureNBT = data.getCompoundTag("heatData")
+        temperature = temperatureNBT.getInteger("temperature")
+    }
+
+    private inner class EntrodynamicallyPhaseChangerRecipeLogic(mte: RecipeMapMultiblockController) :
+        ExtendedPowerHeatingCoilRecipeLogic(mte)
     {
 
         override fun getOverclockingDurationFactor() = PERFECT_DURATION_FACTOR / 2
@@ -222,17 +246,18 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
         override fun modifyOverclockPre(ocParams: OCParams, storage: RecipePropertyStorage)
         {
             super.modifyOverclockPre(ocParams, storage)
-            ocParams.setEut(applyCoilEUtDiscount(ocParams.eut(), (this.metaTileEntity as IHeatingCoil).currentTemperature,
-                storage.get(TemperatureProperty.getInstance(), 0)!!))
+            ocParams.setEut(applyCoilEUtDiscount(ocParams.eut(),
+                                                 (this.metaTileEntity as IHeatingCoil).currentTemperature,
+                                                 storage.get(TemperatureProperty.getInstance(), 0)!!))
         }
 
         override fun completeRecipe()
         {
             super.completeRecipe()
-            temperature += 100
+            temperature = min(temperature + 100L, Int.MAX_VALUE.toLong()).toInt()
         }
 
-        override fun getParallelLimit(): Int = min(level * 256 * currentTemperature, Int.MAX_VALUE)
+        override fun getParallelLimit(): Int = min(level * 256L * currentTemperature, Int.MAX_VALUE.toLong()).toInt()
 
         private fun calculateAmountCoilEUtDiscount(providedTemp: Int, requiredTemp: Int): Int
         {
@@ -248,7 +273,8 @@ class MultiblockEntrodynamicallyPhaseChanger(id: ResourceLocation)
             else
             {
                 val amountEUtDiscount = calculateAmountCoilEUtDiscount(providedTemp, requiredTemp)
-                return if (amountEUtDiscount < 1) recipeEUt else (recipeEUt * min(1.0, 0.5.pow(amountEUtDiscount))).toLong()
+                return if (amountEUtDiscount < 1) recipeEUt
+                else (recipeEUt * min(1.0, 0.5.pow(amountEUtDiscount))).toLong()
             }
         }
 
